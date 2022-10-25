@@ -516,6 +516,7 @@ def build(ctx):
         ( "video/out/vo_image.c" ),
         ( "video/out/vo_lavc.c" ),
         ( "video/out/vo_libmpv.c" ),
+        ( "video/out/vo_avfoundation.m", "avfoundation" ),
         ( "video/out/vo_mediacodec_embed.c",     "android" ),
         ( "video/out/vo_null.c" ),
         ( "video/out/vo_rpi.c",                  "rpi-mmal" ),

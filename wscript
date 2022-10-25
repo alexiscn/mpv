@@ -475,6 +475,12 @@ audio_output_features = [
         'desc': 'ALSA audio output',
         'func': check_pkg_config('alsa', '>= 1.0.18'),
     }, {
+        'name': '--avfoundation',
+        'desc': 'AVFoundation video output',
+        'func': check_cc(
+            fragment="#include <AVFoundation/AVFoundation.h>\nint main() { return 0; }",
+            framework_name=['AVFoundation', 'CoreMedia']),
+    }, {
         'name': '--coreaudio',
         'desc': 'CoreAudio audio output',
         'func': check_cc(
