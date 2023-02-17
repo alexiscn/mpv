@@ -436,11 +436,12 @@ static void xrandr_read(struct vo_x11_state *x11)
             bstr_lower(provider_name);
             int amd = bstr_find0(provider_name, "amd");
             int intel = bstr_find0(provider_name, "intel");
+            int modesetting = bstr_find0(provider_name, "modesetting");
             int nouveau = bstr_find0(provider_name, "nouveau");
             int nvidia = bstr_find0(provider_name, "nvidia");
             int radeon = bstr_find0(provider_name, "radeon");
             x11->has_mesa = x11->has_mesa || amd >= 0 || intel >= 0 ||
-                            nouveau >= 0 || radeon >= 0;
+                            modesetting >= 0 || nouveau >= 0 || radeon >= 0;
             x11->has_nvidia = x11->has_nvidia || nvidia >= 0;
             XRRFreeProviderInfo(info);
         }
@@ -595,7 +596,7 @@ static void vo_x11_get_bounding_monitors(struct vo_x11_state *x11, long b[4])
     XFree(screens);
 }
 
-int vo_x11_init(struct vo *vo)
+bool vo_x11_init(struct vo *vo)
 {
     char *dispName;
 
@@ -684,11 +685,11 @@ int vo_x11_init(struct vo *vo)
 
     vo_x11_update_geometry(vo);
 
-    return 1;
+    return true;
 
 error:
     vo_x11_uninit(vo);
-    return 0;
+    return false;
 }
 
 static const struct mp_keymap keymap[] = {
@@ -1439,8 +1440,8 @@ static void vo_x11_update_window_title(struct vo *vo)
     /* _NET_WM_NAME and _NET_WM_ICON_NAME must be sanitized to UTF-8. */
     void *tmp = talloc_new(NULL);
     struct bstr b_title = bstr_sanitize_utf8_latin1(tmp, bstr0(x11->window_title));
-    vo_x11_set_property_utf8(vo, XA(x11, _NET_WM_NAME), b_title.start);
-    vo_x11_set_property_utf8(vo, XA(x11, _NET_WM_ICON_NAME), b_title.start);
+    vo_x11_set_property_utf8(vo, XA(x11, _NET_WM_NAME), bstrto0(tmp, b_title));
+    vo_x11_set_property_utf8(vo, XA(x11, _NET_WM_ICON_NAME), bstrto0(tmp, b_title));
     talloc_free(tmp);
 }
 
@@ -1972,7 +1973,8 @@ bool vo_x11_check_visible(struct vo *vo) {
     struct vo_x11_state *x11 = vo->x11;
     struct mp_vo_opts *opts = x11->opts;
 
-    bool render = !x11->hidden || VS_IS_DISP(opts->video_sync);
+    bool render = !x11->hidden || opts->force_render ||
+                  VS_IS_DISP(opts->video_sync);
     return render;
 }
 
@@ -2117,6 +2119,12 @@ int vo_x11_control(struct vo *vo, int *events, int request, void *arg)
         ((int *)arg)[1] = selected_disp->rc.y1 - selected_disp->rc.y0;
         return VO_TRUE;
     }
+    case VOCTRL_GET_WINDOW_ID: {
+        if (!x11->window)
+            return VO_NOTAVAIL;
+        *(int64_t *)arg = x11->window;
+        return VO_TRUE;
+    }
     case VOCTRL_GET_HIDPI_SCALE:
         *(double *)arg = x11->dpi_scale;
         return VO_TRUE;
@@ -2242,7 +2250,7 @@ bool vo_x11_screen_is_composited(struct vo *vo)
 {
     struct vo_x11_state *x11 = vo->x11;
     char buf[50];
-    sprintf(buf, "_NET_WM_CM_S%d", x11->screen);
+    snprintf(buf, sizeof(buf), "_NET_WM_CM_S%d", x11->screen);
     Atom NET_WM_CM = XInternAtom(x11->display, buf, False);
     return XGetSelectionOwner(x11->display, NET_WM_CM) != None;
 }

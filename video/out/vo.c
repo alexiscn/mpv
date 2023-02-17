@@ -63,13 +63,14 @@ extern const struct vo_driver video_out_drm;
 extern const struct vo_driver video_out_direct3d;
 extern const struct vo_driver video_out_sdl;
 extern const struct vo_driver video_out_vaapi;
-extern const struct vo_driver video_out_vaapi_wayland;
+extern const struct vo_driver video_out_dmabuf_wayland;
 extern const struct vo_driver video_out_wlshm;
 extern const struct vo_driver video_out_rpi;
 extern const struct vo_driver video_out_tct;
 extern const struct vo_driver video_out_sixel;
+extern const struct vo_driver video_out_kitty;
 
-const struct vo_driver *const video_out_drivers[] =
+static const struct vo_driver *const video_out_drivers[] =
 {
     &video_out_libmpv,
 #if HAVE_AVFOUNDATION
@@ -97,8 +98,8 @@ const struct vo_driver *const video_out_drivers[] =
 #if HAVE_SDL2_VIDEO
     &video_out_sdl,
 #endif
-#if HAVE_VAAPI_WAYLAND && HAVE_MEMFD_CREATE
-    &video_out_vaapi_wayland,
+#if HAVE_DMABUF_WAYLAND
+    &video_out_dmabuf_wayland,
 #endif
 #if HAVE_VAAPI_X11 && HAVE_GPL
     &video_out_vaapi,
@@ -122,8 +123,8 @@ const struct vo_driver *const video_out_drivers[] =
 #if HAVE_SIXEL
     &video_out_sixel,
 #endif
+    &video_out_kitty,
     &video_out_lavc,
-    NULL
 };
 
 struct vo_internal {
@@ -191,7 +192,7 @@ static void *vo_thread(void *ptr);
 
 static bool get_desc(struct m_obj_desc *dst, int index)
 {
-    if (index >= MP_ARRAY_SIZE(video_out_drivers) - 1)
+    if (index >= MP_ARRAY_SIZE(video_out_drivers))
         return false;
     const struct vo_driver *vo = video_out_drivers[index];
     *dst = (struct m_obj_desc) {
@@ -373,7 +374,7 @@ struct vo *init_best_video_out(struct mpv_global *global, struct vo_extra *ex)
     }
 autoprobe:
     // now try the rest...
-    for (int i = 0; video_out_drivers[i]; i++) {
+    for (int i = 0; i < MP_ARRAY_SIZE(video_out_drivers); i++) {
         const struct vo_driver *driver = video_out_drivers[i];
         if (driver == &video_out_null)
             break;
@@ -1070,10 +1071,10 @@ static void do_redraw(struct vo *vo)
 }
 
 static struct mp_image *get_image_vo(void *ctx, int imgfmt, int w, int h,
-                                     int stride_align)
+                                     int stride_align, int flags)
 {
     struct vo *vo = ctx;
-    return vo->driver->get_image(vo, imgfmt, w, h, stride_align);
+    return vo->driver->get_image(vo, imgfmt, w, h, stride_align, flags);
 }
 
 static void *vo_thread(void *ptr)
@@ -1404,12 +1405,12 @@ struct vo_frame *vo_get_current_vo_frame(struct vo *vo)
 }
 
 struct mp_image *vo_get_image(struct vo *vo, int imgfmt, int w, int h,
-                              int stride_align)
+                              int stride_align, int flags)
 {
     if (vo->driver->get_image_ts)
-        return vo->driver->get_image_ts(vo, imgfmt, w, h, stride_align);
+        return vo->driver->get_image_ts(vo, imgfmt, w, h, stride_align, flags);
     if (vo->in->dr_helper)
-        return dr_helper_get_image(vo->in->dr_helper, imgfmt, w, h, stride_align);
+        return dr_helper_get_image(vo->in->dr_helper, imgfmt, w, h, stride_align, flags);
     return NULL;
 }
 
@@ -1433,8 +1434,7 @@ struct vo_frame *vo_frame_ref(struct vo_frame *frame)
     *new = *frame;
     for (int n = 0; n < frame->num_frames; n++) {
         new->frames[n] = mp_image_new_ref(frame->frames[n]);
-        if (!new->frames[n])
-            abort(); // OOM on tiny allocs
+        MP_HANDLE_OOM(new->frames[n]);
     }
     new->current = new->num_frames ? new->frames[0] : NULL;
     return new;

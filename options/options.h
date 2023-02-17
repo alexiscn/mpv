@@ -27,6 +27,7 @@ typedef struct mp_vo_opts {
     char *fsscreen_name;
     char *winname;
     char *appid;
+    int content_type;
     int x11_netwm;
     int x11_bypass_compositor;
     int x11_present;
@@ -56,6 +57,7 @@ typedef struct mp_vo_opts {
 
     float force_monitor_aspect;
     float monitor_pixel_aspect;
+    int force_render;
     int force_window_position;
 
     char *mmcss_profile;
@@ -63,9 +65,6 @@ typedef struct mp_vo_opts {
     double override_display_fps;
     double timing_offset;
     int video_sync;
-
-    // vo_drm
-    struct drm_opts *drm_opts;
 
     struct m_geometry android_surface_size;
 
@@ -358,6 +357,7 @@ typedef struct MPOpts {
     struct d3d11va_opts *d3d11va_opts;
     struct cocoa_opts *cocoa_opts;
     struct macos_opts *macos_opts;
+    struct drm_opts *drm_opts;
     struct wayland_opts *wayland_opts;
     struct dvd_opts *dvd_opts;
     struct vaapi_opts *vaapi_opts;

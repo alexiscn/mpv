@@ -98,6 +98,8 @@ enum tone_mapping {
     TONE_MAPPING_SPLINE,
     TONE_MAPPING_BT_2390,
     TONE_MAPPING_BT_2446A,
+    TONE_MAPPING_ST2094_40,
+    TONE_MAPPING_ST2094_10,
 };
 
 enum tone_mapping_mode {
@@ -162,6 +164,7 @@ struct gl_video_opts {
     float interpolation_threshold;
     int blend_subs;
     char **user_shaders;
+    char **user_shader_opts;
     int deband;
     struct deband_opts *deband_opts;
     float unsharp;
@@ -228,7 +231,7 @@ struct vo;
 void gl_video_configure_queue(struct gl_video *p, struct vo *vo);
 
 struct mp_image *gl_video_get_image(struct gl_video *p, int imgfmt, int w, int h,
-                                    int stride_align);
+                                    int stride_align, int flags);
 
 
 #endif

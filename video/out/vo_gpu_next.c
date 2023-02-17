@@ -189,12 +189,17 @@ static void free_dr_buf(void *opaque, uint8_t *data)
 }
 
 static struct mp_image *get_image(struct vo *vo, int imgfmt, int w, int h,
-                                  int stride_align)
+                                  int stride_align, int flags)
 {
     struct priv *p = vo->priv;
     pl_gpu gpu = p->gpu;
     if (!gpu->limits.thread_safe || !gpu->limits.max_mapped_size)
         return NULL;
+
+#if PL_API_VER >= 234
+    if ((flags & VO_DR_FLAG_HOST_CACHED) && !gpu->limits.host_cached)
+        return NULL;
+#endif
 
     int size = mp_image_get_alloc_size(imgfmt, w, h, stride_align);
     if (size < 0)
@@ -344,7 +349,9 @@ static int plane_data_from_imgfmt(struct pl_plane_data out_data[4],
     if ((desc.flags & MP_IMGFLAG_TYPE_FLOAT) && (desc.flags & MP_IMGFLAG_YUV))
         return 0; // Floating-point YUV (currently) unsupported
 
+    bool has_bits = false;
     bool any_padded = false;
+
     for (int p = 0; p < desc.num_planes; p++) {
         struct pl_plane_data *data = &out_data[p];
         struct mp_imgfmt_comp_desc sorted[MP_NUM_COMPONENTS];
@@ -390,8 +397,9 @@ static int plane_data_from_imgfmt(struct pl_plane_data out_data[4],
                 .bit_shift = MPMAX(sorted[c].pad, 0),
             };
 
-            if (p == 0 && c == 0) {
+            if (!has_bits) {
                 *out_bits = bits;
+                has_bits = true;
             } else {
                 if (!pl_bit_encoding_equal(out_bits, &bits)) {
                     // Bit encoding differs between components/planes,
@@ -414,6 +422,17 @@ static int plane_data_from_imgfmt(struct pl_plane_data out_data[4],
     return desc.num_planes;
 }
 
+static inline void *get_side_data(const struct mp_image *mpi,
+                                  enum AVFrameSideDataType type)
+{
+    for (int i = 0; i <mpi->num_ff_side_data; i++) {
+        if (mpi->ff_side_data[i].type == type)
+            return (void *) mpi->ff_side_data[i].buf->data;
+    }
+
+    return NULL;
+}
+
 static struct pl_color_space get_mpi_csp(struct vo *vo, struct mp_image *mpi)
 {
     struct pl_color_space csp = {
@@ -422,6 +441,13 @@ static struct pl_color_space get_mpi_csp(struct vo *vo, struct mp_image *mpi)
         .hdr.max_luma = mpi->params.color.sig_peak * MP_REF_WHITE,
     };
 
+#ifdef PL_HAVE_LAV_HDR
+    pl_map_hdr_metadata(&csp.hdr, &(struct pl_av_hdr_metadata) {
+        .mdm = get_side_data(mpi, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA),
+        .clm = get_side_data(mpi, AV_FRAME_DATA_CONTENT_LIGHT_LEVEL),
+        .dhp = get_side_data(mpi, AV_FRAME_DATA_DYNAMIC_HDR_PLUS),
+    });
+#else // back-compat fallback for older libplacebo
     for (int i = 0; i < mpi->num_ff_side_data; i++) {
         void *data = mpi->ff_side_data[i].buf->data;
         switch (mpi->ff_side_data[i].type) {
@@ -453,6 +479,7 @@ static struct pl_color_space get_mpi_csp(struct vo *vo, struct mp_image *mpi)
         default: break;
         }
     }
+#endif // PL_HAVE_LAV_HDR
 
     return csp;
 }
@@ -979,6 +1006,15 @@ static void draw_frame(struct vo *vo, struct vo_frame *frame)
                 image->num_overlays = 0;
                 fp->osd_sync = 0;
             }
+
+            // Update the frame signature to include the current OSD sync
+            // value, in order to disambiguate between identical frames with
+            // modified OSD. Shift the OSD sync value by a lot to avoid
+            // collisions with low signature values.
+            //
+            // This is safe to do because `pl_frame_mix.signature` lives in
+            // temporary memory that is only valid for this `pl_queue_update`.
+            ((uint64_t *) mix.signatures)[i] ^= fp->osd_sync << 48;
         }
     }
 
@@ -1060,7 +1096,6 @@ static void resize(struct vo *vo)
         osd_res_equals(p->osd_res, osd))
         return;
 
-    pl_renderer_flush_cache(p->rr);
     p->osd_sync++;
     p->osd_res = osd;
     p->src = src;
@@ -1182,6 +1217,7 @@ static void video_screenshot(struct vo *vo, struct voctrl_screenshot *args)
     }
 
     struct pl_frame target = {
+        .repr = pl_color_repr_rgb,
         .num_planes = 1,
         .planes[0] = {
             .texture = fbo,
@@ -1190,7 +1226,15 @@ static void video_screenshot(struct vo *vo, struct voctrl_screenshot *args)
         },
     };
 
-    apply_target_options(p, &target);
+    if (args->scaled) {
+        // Apply target LUT, ICC profile and CSP override only in window mode
+        apply_target_options(p, &target);
+    } else if (args->native_csp) {
+        target.color = image.color;
+    } else {
+        target.color = pl_color_space_srgb;
+    }
+
     apply_crop(&image, src, mpi->params.w, mpi->params.h);
     apply_crop(&target, dst, fbo->params.w, fbo->params.h);
 
@@ -1211,6 +1255,22 @@ static void video_screenshot(struct vo *vo, struct voctrl_screenshot *args)
     args->res = mp_image_alloc(mpfmt, fbo->params.w, fbo->params.h);
     if (!args->res)
         goto done;
+
+    if (args->scaled) {
+        // Provide tagging for target CSP info (if known)
+        const struct gl_video_opts *opts = p->opts_cache->opts;
+        args->res->params.color.primaries = opts->target_prim;
+        args->res->params.color.gamma = opts->target_trc;
+        args->res->params.color.levels = p->output_levels;
+        args->res->params.color.sig_peak = opts->target_peak;
+        args->res->params.p_w = args->res->params.p_h = 1;
+    } else if (args->native_csp) {
+        args->res->params.color = mpi->params.color;
+        args->res->params.color.space = MP_CSP_RGB;
+    } else {
+        args->res->params.color.primaries = MP_CSP_PRIM_BT_709;
+        args->res->params.color.gamma = MP_CSP_TRC_SRGB;
+    }
 
     bool ok = pl_tex_download(gpu, pl_tex_transfer_params(
         .tex = fbo,
@@ -1241,7 +1301,6 @@ static int control(struct vo *vo, uint32_t request, void *data)
         return VO_TRUE;
 
     case VOCTRL_OSD_CHANGED:
-        pl_renderer_flush_cache(p->rr);
         p->osd_sync++;
         return VO_TRUE;
 
@@ -1542,7 +1601,7 @@ static const struct pl_hook *load_hook(struct priv *p, const char *path)
     return hook;
 }
 
-#if PL_API_VER >= 222
+#if PL_API_VER >= 222 && defined(PL_HAVE_LCMS)
 
 static stream_t *icc_open_cache(struct priv *p, uint64_t sig, int flags)
 {
@@ -1682,6 +1741,62 @@ static void update_lut(struct priv *p, struct user_lut *lut)
     talloc_free(lutdata.start);
 }
 
+static void update_hook_opts(struct priv *p, char **opts, const char *shaderpath,
+                             const struct pl_hook *hook)
+{
+    if (!opts)
+        return;
+
+#if PL_API_VER >= 233
+    const char *basename = mp_basename(shaderpath);
+    struct bstr shadername;
+    if (!mp_splitext(basename, &shadername))
+        shadername = bstr0(basename);
+
+    for (int n = 0; opts[n * 2]; n++) {
+        struct bstr k = bstr0(opts[n * 2 + 0]);
+        struct bstr v = bstr0(opts[n * 2 + 1]);
+        int pos;
+        if ((pos = bstrchr(k, '/')) >= 0) {
+            if (!bstr_equals(bstr_splice(k, 0, pos), shadername))
+                continue;
+            k = bstr_cut(k, pos + 1);
+        }
+
+        for (int i = 0; i < hook->num_parameters; i++) {
+            const struct pl_hook_par *hp = &hook->parameters[i];
+            if (!bstr_equals0(k, hp->name) != 0)
+                continue;
+
+            m_option_t opt = {
+                .name = hp->name,
+            };
+
+            switch (hp->type) {
+            case PL_VAR_FLOAT:
+                opt.type = &m_option_type_float;
+                opt.min = hp->minimum.f;
+                opt.max = hp->maximum.f;
+                break;
+            case PL_VAR_SINT:
+                opt.type = &m_option_type_int;
+                opt.min = hp->minimum.i;
+                opt.max = hp->maximum.i;
+                break;
+            case PL_VAR_UINT:
+                opt.type = &m_option_type_int;
+                opt.min = MPMIN(hp->minimum.u, INT_MAX);
+                opt.max = MPMIN(hp->maximum.u, INT_MAX);
+                break;
+            }
+
+            opt.type->parse(p->log, &opt, k, v, hp->data);
+            break;
+        }
+    }
+#endif
+}
+
 static void update_render_options(struct vo *vo)
 {
     struct priv *p = vo->priv;
@@ -1698,6 +1813,7 @@ static void update_render_options(struct vo *vo)
     p->params.background_color[0] = opts->background.r / 255.0;
     p->params.background_color[1] = opts->background.g / 255.0;
     p->params.background_color[2] = opts->background.b / 255.0;
+    p->params.background_transparency = 1.0 - opts->background.a / 255.0;
     p->params.skip_anti_aliasing = !opts->correct_downscaling;
     p->params.disable_linear_scaling = !opts->linear_downscaling && !opts->linear_upscaling;
     p->params.disable_fbos = opts->dumb_mode == 1;
@@ -1744,6 +1860,10 @@ static void update_render_options(struct vo *vo)
         [TONE_MAPPING_SPLINE]   = &pl_tone_map_spline,
         [TONE_MAPPING_BT_2390]  = &pl_tone_map_bt2390,
         [TONE_MAPPING_BT_2446A] = &pl_tone_map_bt2446a,
+#if PL_API_VER >= 246
+        [TONE_MAPPING_ST2094_40] = &pl_tone_map_st2094_40,
+        [TONE_MAPPING_ST2094_10] = &pl_tone_map_st2094_10,
+#endif
     };
 
     static const enum pl_gamut_mode gamut_modes[] = {
@@ -1787,7 +1907,7 @@ static void update_render_options(struct vo *vo)
 #else
         MP_ERR(p, "Error diffusion dithering is not implemented.\n");
 #endif
-        // fall through
+        MP_FALLTHROUGH;
     case DITHER_ORDERED:
     case DITHER_FRUIT:
         p->params.dither_params = &p->dither;
@@ -1807,8 +1927,10 @@ static void update_render_options(struct vo *vo)
 
     const struct pl_hook *hook;
     for (int i = 0; opts->user_shaders && opts->user_shaders[i]; i++) {
-        if ((hook = load_hook(p, opts->user_shaders[i])))
+        if ((hook = load_hook(p, opts->user_shaders[i]))) {
             MP_TARRAY_APPEND(p, p->hooks, p->params.num_hooks, hook);
+            update_hook_opts(p, opts->user_shader_opts, opts->user_shaders[i], hook);
+        }
     }
 
     p->params.hooks = p->hooks;

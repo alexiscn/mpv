@@ -36,9 +36,7 @@
 #include <libavutil/display.h>
 #include <libavutil/opt.h>
 
-#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(56, 43, 100)
 #include <libavutil/dovi_meta.h>
-#endif
 
 #include "audio/chmap_avchannel.h"
 
@@ -745,14 +743,12 @@ static void handle_new_stream(demuxer_t *demuxer, int i)
                 sh->codec->rotate = (((int)(-r) % 360) + 360) % 360;
         }
 
-#if LIBAVUTIL_VERSION_INT >= AV_VERSION_INT(56, 43, 100)
         if ((sd = av_stream_get_side_data(st, AV_PKT_DATA_DOVI_CONF, NULL))) {
             const AVDOVIDecoderConfigurationRecord *cfg = (void *) sd;
             MP_VERBOSE(demuxer, "Found Dolby Vision config record: profile "
                        "%d level %d\n", cfg->dv_profile, cfg->dv_level);
             av_format_inject_global_side_data(avfc);
         }
-#endif
 
         // This also applies to vfw-muxed mkv, but we can't detect these easily.
         sh->codec->avi_dts = matches_avinputformat_name(priv, "avi");
@@ -1311,10 +1307,11 @@ static void demux_seek_lavf(demuxer_t *demuxer, double seek_pts, int flags)
     if (priv->pcm_seek_hack && !priv->pcm_seek_hack_packet_size) {
         // This might for example be the initial seek. Fuck it up like the
         // bullshit it is.
-        AVPacket pkt = {0};
-        if (av_read_frame(priv->avfc, &pkt) >= 0)
-            priv->pcm_seek_hack_packet_size = pkt.size;
-        av_packet_unref(&pkt);
+        AVPacket *pkt = av_packet_alloc();
+        MP_HANDLE_OOM(pkt);
+        if (av_read_frame(priv->avfc, pkt) >= 0)
+            priv->pcm_seek_hack_packet_size = pkt->size;
+        av_packet_free(&pkt);
         add_new_streams(demuxer);
     }
     if (priv->pcm_seek_hack && priv->pcm_seek_hack_packet_size &&

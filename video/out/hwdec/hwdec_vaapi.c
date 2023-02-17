@@ -52,6 +52,7 @@ static VADisplay *create_x11_va_display(struct ra *ra)
 static VADisplay *create_wayland_va_display(struct ra *ra)
 {
     struct wl_display *wl = ra_get_native_resource(ra, "wl");
+
     return wl ? vaGetDisplayWl(wl) : NULL;
 }
 #endif
@@ -124,6 +125,9 @@ const static dmabuf_interop_init interop_inits[] = {
 #if HAVE_DMABUF_INTEROP_PL
     dmabuf_interop_pl_init,
 #endif
+#if HAVE_DMABUF_WAYLAND
+    dmabuf_interop_wl_init,
+#endif
     NULL
 };
 
@@ -166,6 +170,9 @@ static int init(struct ra_hwdec *hw)
     if (!p->formats || !p->formats[0]) {
         return -1;
     }
+
+    // it's now safe to set the display resource
+    ra_add_native_resource(hw->ra, "VADisplay", p->display);
 
     p->ctx->hwctx.hw_imgfmt = IMGFMT_VAAPI;
     p->ctx->hwctx.supported_formats = p->formats;
@@ -217,8 +224,9 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
 
     struct ra_imgfmt_desc desc = {0};
 
-    if (!ra_get_imgfmt_desc(mapper->ra, mapper->dst_params.imgfmt, &desc))
-        return -1;
+    if (mapper->ra->num_formats &&
+            !ra_get_imgfmt_desc(mapper->ra, mapper->dst_params.imgfmt, &desc))
+       return -1;
 
     p->num_planes = desc.num_planes;
     mp_image_set_params(&p->layout, &mapper->dst_params);
@@ -237,22 +245,31 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
     return 0;
 }
 
+static void close_file_descriptors(VADRMPRIMESurfaceDescriptor desc)
+{
+    for (int i = 0; i < desc.num_objects; i++)
+        close(desc.objects[i].fd);
+}
+
 static int mapper_map(struct ra_hwdec_mapper *mapper)
 {
     struct priv_owner *p_owner = mapper->owner->priv;
     struct dmabuf_interop_priv *p = mapper->priv;
     VAStatus status;
     VADisplay *display = p_owner->display;
-    VADRMPRIMESurfaceDescriptor desc;
+    VADRMPRIMESurfaceDescriptor desc = {0};
 
+    uint32_t flags = p_owner->dmabuf_interop.composed_layers ?
+        VA_EXPORT_SURFACE_COMPOSED_LAYERS : VA_EXPORT_SURFACE_SEPARATE_LAYERS;
     status = vaExportSurfaceHandle(display, va_surface_id(mapper->src),
                                    VA_SURFACE_ATTRIB_MEM_TYPE_DRM_PRIME_2,
                                    VA_EXPORT_SURFACE_READ_ONLY |
-                                   VA_EXPORT_SURFACE_SEPARATE_LAYERS,
+                                   flags,
                                    &desc);
     if (!CHECK_VA_STATUS_LEVEL(mapper, "vaExportSurfaceHandle()",
                                p_owner->probing_formats ? MSGL_DEBUG : MSGL_ERR))
     {
+        close_file_descriptors(desc);
         goto err;
     }
     vaSyncSurface(display, va_surface_id(mapper->src));
@@ -286,7 +303,7 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
     // We can handle composed formats if the total number of planes is still
     // equal the number of planes we expect. Complex formats with auxilliary
     // planes cannot be supported.
-    if (p->num_planes != num_returned_planes) {
+    if (p->num_planes != 0 && p->num_planes != num_returned_planes) {
         mp_msg(mapper->log, p_owner->probing_formats ? MSGL_DEBUG : MSGL_ERR,
                "Mapped surface with format '%s' has unexpected number of planes. "
                "(%d layers and %d planes, but expected %d planes)\n",
@@ -521,5 +538,4 @@ const struct ra_hwdec_driver ra_hwdec_vaapi = {
         .map = mapper_map,
         .unmap = mapper_unmap,
     },
-    .legacy_name = "vaapi-egl"
 };

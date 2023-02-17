@@ -50,17 +50,25 @@ static const char *const image_exts[] = {"jpg", "jpeg", "png", "gif", "bmp",
 // sorted by priority (descending)
 static const char *const cover_files[] = {
     "AlbumArt.jpg",
+    "AlbumArt.webp",
     "Album.jpg",
+    "Album.webp",
     "cover.jpg",
     "cover.png",
+    "cover.webp",
     "front.jpg",
     "front.png",
+    "front.webp",
 
     "AlbumArtSmall.jpg",
+    "AlbumArtSmall.webp",
     "Folder.jpg",
     "Folder.png",
+    "Folder.webp",
     ".folder.png",
+    ".folder.webp",
     "thumb.jpg",
+    "thumb.webp",
 
     "front.bmp",
     "front.gif",
@@ -254,7 +262,7 @@ static void append_dir_subtitles(struct mpv_global *global, struct MPOpts *opts,
         if (!limit_fuzziness && fuzz >= 2)
             prio |= 1;
 
-        mp_dbg(log, "Potential external file: \"%s\"  Priority: %d\n",
+        mp_trace(log, "Potential external file: \"%s\"  Priority: %d\n",
                de->d_name, prio);
 
         if (prio) {

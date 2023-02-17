@@ -24,6 +24,7 @@
 
 struct dmabuf_interop {
     bool use_modifiers;
+    bool composed_layers;
 
     bool (*interop_init)(struct ra_hwdec_mapper *mapper,
                          const struct ra_imgfmt_desc *desc);
@@ -52,4 +53,6 @@ typedef bool (*dmabuf_interop_init)(const struct ra_hwdec *hw,
 bool dmabuf_interop_gl_init(const struct ra_hwdec *hw,
                             struct dmabuf_interop *dmabuf_interop);
 bool dmabuf_interop_pl_init(const struct ra_hwdec *hw,
+                            struct dmabuf_interop *dmabuf_interop);
+bool dmabuf_interop_wl_init(const struct ra_hwdec *hw,
                             struct dmabuf_interop *dmabuf_interop);

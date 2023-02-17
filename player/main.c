@@ -25,6 +25,11 @@
 #include <locale.h>
 
 #include "config.h"
+
+#if HAVE_LIBPLACEBO
+#include <libplacebo/config.h>
+#endif
+
 #include "mpv_talloc.h"
 
 #include "misc/dispatch.h"
@@ -132,8 +137,12 @@ void mp_update_logging(struct MPContext *mpctx, bool preinit)
         }
     }
 
-    if (mp_msg_has_log_file(mpctx->global) && !had_log_file)
-        mp_print_version(mpctx->log, false); // for log-file=... in config files
+    if (mp_msg_has_log_file(mpctx->global) && !had_log_file) {
+        // for log-file=... in config files.
+        // we did flush earlier messages, but they were in a cyclic buffer, so
+        // the version might have been overwritten. ensure we have it.
+        mp_print_version(mpctx->log, false);
+    }
 
     if (enabled && !preinit && mpctx->opts->consolecontrols)
         terminal_setup_getch(mpctx->input);
@@ -144,6 +153,9 @@ void mp_print_version(struct mp_log *log, int always)
     int v = always ? MSGL_INFO : MSGL_V;
     mp_msg(log, v, "%s %s\n built on %s\n",
            mpv_version, mpv_copyright, mpv_builddate);
+#if HAVE_LIBPLACEBO
+    mp_msg(log, v, "libplacebo version: %s\n", PL_VERSION);
+#endif
     check_library_versions(log, v);
     mp_msg(log, v, "\n");
     // Only in verbose mode.

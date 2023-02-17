@@ -47,6 +47,7 @@ static void uninit(struct ra_hwdec *hw)
     struct priv_owner *p = hw->priv;
     if (p->hwctx.driver_name)
         hwdec_devices_remove(hw->devs, &p->hwctx);
+    av_buffer_unref(&p->hwctx.av_device_ref);
 }
 
 const static dmabuf_interop_init interop_inits[] = {
@@ -55,6 +56,9 @@ const static dmabuf_interop_init interop_inits[] = {
 #endif
 #if HAVE_DMABUF_INTEROP_PL
     dmabuf_interop_pl_init,
+#endif
+#if HAVE_DMABUF_WAYLAND
+    dmabuf_interop_wl_init,
 #endif
     NULL
 };
@@ -89,7 +93,7 @@ static int init(struct ra_hwdec *hw)
      */
     void *tmp = talloc_new(NULL);
     struct drm_opts *drm_opts = mp_get_config_group(tmp, hw->global, &drm_conf);
-    const char *opt_path = drm_opts->drm_device_path;
+    const char *opt_path = drm_opts->device_path;
 
     const char *device_path = params && params->render_fd > -1 ?
                               drmGetRenderDeviceNameFromFd(params->render_fd) :
@@ -112,6 +116,7 @@ static int init(struct ra_hwdec *hw)
      */
     int num_formats = 0;
     MP_TARRAY_APPEND(p, p->formats, num_formats, IMGFMT_NV12);
+    MP_TARRAY_APPEND(p, p->formats, num_formats, IMGFMT_420P);
     MP_TARRAY_APPEND(p, p->formats, num_formats, 0); // terminate it
 
     p->hwctx.hw_imgfmt = IMGFMT_DRMPRIME;
@@ -167,7 +172,8 @@ static int mapper_init(struct ra_hwdec_mapper *mapper)
 
     struct ra_imgfmt_desc desc = {0};
 
-    if (!ra_get_imgfmt_desc(mapper->ra, mapper->dst_params.imgfmt, &desc))
+    if (mapper->ra->num_formats &&
+            !ra_get_imgfmt_desc(mapper->ra, mapper->dst_params.imgfmt, &desc))
         return -1;
 
     p->num_planes = desc.num_planes;
@@ -238,7 +244,7 @@ static int mapper_map(struct ra_hwdec_mapper *mapper)
         num_returned_planes += p->desc.layers[i].nb_planes;
     }
 
-    if (p->num_planes != num_returned_planes) {
+    if (p->num_planes != 0 && p->num_planes != num_returned_planes) {
         MP_ERR(mapper,
                "Mapped surface with format '%s' has unexpected number of planes. "
                "(%d layers and %d planes, but expected %d planes)\n",

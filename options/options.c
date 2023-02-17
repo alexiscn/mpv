@@ -48,10 +48,6 @@
 #include "stream/stream.h"
 #include "demux/demux.h"
 
-#if HAVE_DRM
-#include "video/out/drm_common.h"
-#endif
-
 static void print_version(struct mp_log *log)
 {
     mp_print_version(log, true);
@@ -126,6 +122,7 @@ static const m_option_t mp_vo_opt_list[] = {
     {"window-minimized", OPT_FLAG(window_minimized)},
     {"window-maximized", OPT_FLAG(window_maximized)},
     {"focus-on-open", OPT_BOOL(focus_on_open)},
+    {"force-render", OPT_FLAG(force_render)},
     {"force-window-position", OPT_FLAG(force_window_position)},
     {"x11-name", OPT_STRING(winname)},
     {"wayland-app-id", OPT_STRING(appid)},
@@ -167,6 +164,7 @@ static const m_option_t mp_vo_opt_list[] = {
         {"display-resample", VS_DISP_RESAMPLE},
         {"display-resample-vdrop", VS_DISP_RESAMPLE_VDROP},
         {"display-resample-desync", VS_DISP_RESAMPLE_NONE},
+        {"display-tempo", VS_DISP_TEMPO},
         {"display-adrop", VS_DISP_ADROP},
         {"display-vdrop", VS_DISP_VDROP},
         {"display-desync", VS_DISP_NONE},
@@ -178,11 +176,12 @@ static const m_option_t mp_vo_opt_list[] = {
     {"x11-present", OPT_CHOICE(x11_present,
         {"no", 0}, {"auto", 1}, {"yes", 2})},
 #endif
+#if HAVE_WAYLAND
+    {"wayland-content-type", OPT_CHOICE(content_type, {"auto", -1}, {"none", 0},
+        {"photo", 1}, {"video", 2}, {"game", 3})},
+#endif
 #if HAVE_WIN32_DESKTOP
     {"vo-mmcss-profile", OPT_STRING(mmcss_profile)},
-#endif
-#if HAVE_DRM
-    {"", OPT_SUBSTRUCT(drm_opts, drm_conf)},
 #endif
 #if HAVE_EGL_ANDROID
     {"android-surface-size", OPT_SIZE_BOX(android_surface_size)},
@@ -211,6 +210,7 @@ const struct m_sub_options vo_sub_opts = {
         .border = 1,
         .fit_border = 1,
         .appid = "mpv",
+        .content_type = -1,
         .WinID = -1,
         .window_scale = 1.0,
         .x11_bypass_compositor = 2,
@@ -822,6 +822,10 @@ static const m_option_t mp_opts[] = {
     {"", OPT_SUBSTRUCT(macos_opts, macos_conf)},
 #endif
 
+#if HAVE_DRM
+    {"", OPT_SUBSTRUCT(drm_opts, drm_conf)},
+#endif
+
 #if HAVE_WAYLAND
     {"", OPT_SUBSTRUCT(wayland_opts, wayland_conf)},
 #endif
@@ -1062,6 +1066,7 @@ static const struct MPOpts mp_default_opts = {
     .cuda_device = -1,
 
     .watch_later_options = (char **)(const char*[]){
+        "start",
         "osd-level",
         "speed",
         "edition",

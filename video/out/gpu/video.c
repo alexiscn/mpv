@@ -366,8 +366,10 @@ const struct m_sub_options gl_video_conf = {
     .opts = (const m_option_t[]) {
         {"gpu-dumb-mode", OPT_CHOICE(dumb_mode,
             {"auto", 0}, {"yes", 1}, {"no", -1})},
-        {"gamma-factor", OPT_FLOAT(gamma), M_RANGE(0.1, 2.0)},
-        {"gamma-auto", OPT_FLAG(gamma_auto)},
+        {"gamma-factor", OPT_FLOAT(gamma), M_RANGE(0.1, 2.0),
+            .deprecation_message = "no replacement"},
+        {"gamma-auto", OPT_FLAG(gamma_auto),
+            .deprecation_message = "no replacement"},
         {"target-prim", OPT_CHOICE_C(target_prim, mp_csp_prim_names)},
         {"target-trc", OPT_CHOICE_C(target_trc, mp_csp_trc_names)},
         {"target-peak", OPT_CHOICE(target_peak, {"auto", 0}),
@@ -382,7 +384,9 @@ const struct m_sub_options gl_video_conf = {
             {"linear",   TONE_MAPPING_LINEAR},
             {"spline",   TONE_MAPPING_SPLINE},
             {"bt.2390",  TONE_MAPPING_BT_2390},
-            {"bt.2446a", TONE_MAPPING_BT_2446A})},
+            {"bt.2446a", TONE_MAPPING_BT_2446A},
+            {"st2094-40", TONE_MAPPING_ST2094_40},
+            {"st2094-10", TONE_MAPPING_ST2094_10})},
         {"tone-mapping-param", OPT_FLOATDEF(tone_map.curve_param)},
         {"inverse-tone-mapping", OPT_FLAG(tone_map.inverse)},
         {"tone-mapping-crosstalk", OPT_FLOAT(tone_map.crosstalk),
@@ -453,6 +457,7 @@ const struct m_sub_options gl_video_conf = {
             {"video", BLEND_SUBS_VIDEO})},
         {"glsl-shaders", OPT_PATHLIST(user_shaders), .flags = M_OPT_FILE},
         {"glsl-shader", OPT_CLI_ALIAS("glsl-shaders-append")},
+        {"glsl-shader-opts", OPT_KEYVALUELIST(user_shader_opts)},
         {"deband", OPT_FLAG(deband)},
         {"deband", OPT_SUBSTRUCT(deband_opts, deband_conf)},
         {"sharpen", OPT_FLOAT(unsharp)},
@@ -1912,8 +1917,7 @@ static void pass_sample(struct gl_video *p, struct image img,
     } else if (scaler->kernel) {
         pass_sample_separated(p, img, scaler, w, h);
     } else {
-        // Should never happen
-        abort();
+        MP_ASSERT_UNREACHABLE(); // should never happen
     }
 
     // Apply any required multipliers. Separated scaling already does this in
@@ -4286,8 +4290,15 @@ static void gl_video_dr_free_buffer(void *opaque, uint8_t *data)
 }
 
 struct mp_image *gl_video_get_image(struct gl_video *p, int imgfmt, int w, int h,
-                                    int stride_align)
+                                    int stride_align, int flags)
 {
+    if (flags & VO_DR_FLAG_HOST_CACHED) {
+        if (p->ra->caps & RA_CAP_SLOW_DR) {
+            MP_VERBOSE(p, "DR path suspected slow/uncached, disabling..");
+            return NULL;
+        }
+    }
+
     if (!gl_video_check_format(p, imgfmt))
         return NULL;
 
